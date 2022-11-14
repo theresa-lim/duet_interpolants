@@ -69,6 +69,8 @@ val local_project : (int -> QQ.t) -> int list -> t -> t
 (** Fourier-Motzkin elimination. *)
 val project : int list -> t -> t
 
+val max_constrained_dim : t -> int 
+
 (** Apply Fourier-Motzkin elimination to the subset of symbols that appear
     linearly and are "easy" to eliminate.  Symbols that do not appear linearly
     are not projected.  *)
