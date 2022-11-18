@@ -7,10 +7,12 @@ struct
 
 (* given polyhedrons pA and pB, computes the half-space interpolent that 
    seperates them*)
-let halfITP (pA: Polyhedron.t) (pB: Polyhedron.t) srk = 
+let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) = 
+    let i = List.map (fun ind -> mk_symbol srk ~name:("i"^(string_of_int ind)) `TyReal) 
+          (List.init dim (fun v -> v)) in 
+    let k = (mk_symbol srk ~name:"k" `TyReal) in 
 
   let phi (p: Polyhedron.t) (isA: bool) =
-    let dim = Polyhedron.max_constrained_dim p in 
     let matrix_form = 
       Polyhedron.enum_constraints p
       |> BatEnum.fold (fun acc (typ, vec) -> 
@@ -31,10 +33,6 @@ let halfITP (pA: Polyhedron.t) (pB: Polyhedron.t) srk =
           else (M.add ind [term] i_sums, k_sum)
       ) vec (i_sums, k_sum)
       ) (M.empty, []) matrix_form lambdas in 
-    
-    let i = List.map (fun ind -> mk_symbol srk ~name:("i"^(string_of_int ind)) `TyReal) 
-          (List.init dim (fun v -> v)) in 
-    let k = mk_const srk (mk_symbol srk ~name:"k" `TyReal) in 
 
     let nonneg = List.map (fun sym -> mk_leq srk (mk_zero srk) (mk_const srk sym)) lambdas in 
     let i_constraints = 
@@ -46,17 +44,48 @@ let halfITP (pA: Polyhedron.t) (pB: Polyhedron.t) srk =
       ) i_sums [] 
     in  
     let k_constraint = 
-      if isA then mk_leq srk (k) (mk_add srk k_sum) (* shouldn't this be the other way around?*)
-      else mk_not srk (mk_leq srk (mk_neg srk k) (mk_add srk k_sum))
+      if isA then mk_leq srk (mk_add srk k_sum) (mk_const srk k)(* shouldn't this be the other way around?*)
+      else mk_not srk (mk_leq srk (mk_add srk k_sum) (mk_neg srk (mk_const srk k)))
     in 
 
     mk_and srk (k_constraint :: i_constraints @ nonneg)
-  
   in
   let formula = mk_and srk [(phi pA true); (phi pB false)] in
   let model = Smt.get_model srk formula in
   match model with
-  | `Sat interp -> Some interp
+  | `Sat interp -> 
+    let k_value = Interpretation.real interp k |> mk_real srk in 
+    let ix = List.map2 (fun coeff var -> mk_mul srk [mk_real srk (Interpretation.real interp coeff); var]) i variables 
+    |> mk_add srk in 
+    Some (mk_leq srk ix k_value)
   | _ -> None
+
+
+  
+
+(*
+  cand (sA: polyhedron list) (sB: polyhedron list) : formula <- Theresa
+
+  sample (samples: polyhedron list) : polyhedron list <- Nikhil
+   m = model
+   A = 
+    
+  interpolant (A: polyhedron list) (B: polyhedron list)=
+    sA = sample A
+    sB = sample B
+    C = cand sA sB
+    while not (A -> C and C -> \neg B):
+      populate pitp
+      if PTIP = empty then SAT
+      else
+        ...
+
+*)
+
+(* to do: populate PItp (an ocaml map?)
+   decide how we want to represent SA and SB (lists? there might be a more efficient data structure that I don't know about)
+   do termination conditions
+   figure out merging + splitting
+   *)
 
 end
