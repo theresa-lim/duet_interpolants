@@ -9,7 +9,7 @@ struct
    seperates them*)
 let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) = 
     let i = List.map (fun ind -> mk_symbol srk ~name:("i"^(string_of_int ind)) `TyReal) 
-          (List.init dim (fun v -> v)) in 
+          (List.init dim (fun v -> v)) in (* what is dim here?? need a diff set of i *)
     let k = (mk_symbol srk ~name:"k" `TyReal) in 
 
   let phi (p: Polyhedron.t) (isA: bool) =
@@ -60,12 +60,31 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     Some (mk_leq srk ix k_value)
   | _ -> None
 
+  let cand srk dim vars (sA: Polyhedron.t list) (sB: Polyhedron.t list) : 'a formula option= 
+    let rec cand_B (a: Polyhedron.t) (sB: Polyhedron.t list) acc = 
+      (* need to get the variables from ??? A or B *)
+      match sB with
+      | hd :: tl -> begin 
+        match halfITP srk dim vars a hd with
+        | Some f -> 
+        cand_B a tl (mk_and srk [f ; acc])
+        | None -> None
+      end
+      | [] -> Some acc
+    in
+    let rec cand_A (sA: Polyhedron.t list) (sB: Polyhedron.t list) acc =
+      match sA with
+      | hd :: tl -> begin
+        match cand_B hd sB (mk_true srk) with
+        | Some f -> cand_A tl sB (mk_or srk [(f); acc])
+        | None -> None
+      end
+      | [] -> Some acc
+    in
+    cand_A sA sB (mk_false srk)
 
-  
 
 (*
-  cand (sA: polyhedron list) (sB: polyhedron list) : formula <- Theresa
-
   sample (samples: polyhedron list) : polyhedron list <- Nikhil
    m = model
    A = 
