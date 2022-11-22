@@ -83,6 +83,18 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     in
     cand_A sA sB (mk_false srk)
 
+  let sample context vars (model: 'a Interpretation.interpretation) (phi: Polyhedron.t) = 
+    Polyhedron.enum_constraints phi 
+    |> BatEnum.map (fun (typ, v) ->
+      let formula = (match typ with 
+      | `Nonneg -> mk_leq context (mk_zero context) (Linear.term_of_vec context (fun i -> List.nth vars i) v)
+      | `Pos -> mk_lt context (mk_zero context) (Linear.term_of_vec context (fun i -> List.nth vars i) v)
+      | `Zero -> mk_eq context (mk_zero context) (Linear.term_of_vec context (fun i -> List.nth vars i) v))
+      in 
+      if (Interpretation.evaluate_formula model formula) then formula else mk_not context formula
+      )
+    |> BatEnum.fold (fun acc v -> v :: acc) []
+    |> mk_and context
 
 (*
   sample (samples: polyhedron list) : polyhedron list <- Nikhil
