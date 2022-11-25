@@ -60,28 +60,28 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     Some (mk_leq srk ix k_value)
   | _ -> None
 
-  let cand srk dim vars (sA: Polyhedron.t list) (sB: Polyhedron.t list) : 'a formula option= 
-    let rec cand_B (a: Polyhedron.t) (sB: Polyhedron.t list) acc = 
+  let cand srk dim vars (sA: Polyhedron.t) (sB: Polyhedron.t) : 'a formula option= 
+    let rec cand_B a sB acc = 
       (* need to get the variables from ??? A or B *)
-      match sB with
-      | hd :: tl -> begin 
-        match halfITP srk dim vars a hd with
+      match BatEnum.get sB with
+      | Some c -> begin 
+        match halfITP srk dim vars (Polyhedron.of_constraints (BatEnum.singleton a)) (Polyhedron.of_constraints (BatEnum.singleton c)) with
         | Some f -> 
-        cand_B a tl (mk_and srk [f ; acc])
+        cand_B a sB (mk_and srk [f ; acc])
         | None -> None
       end
-      | [] -> Some acc
+      | None -> Some acc
     in
-    let rec cand_A (sA: Polyhedron.t list) (sB: Polyhedron.t list) acc =
-      match sA with
-      | hd :: tl -> begin
-        match cand_B hd sB (mk_true srk) with
-        | Some f -> cand_A tl sB (mk_or srk [(f); acc])
+    let rec cand_A sA sB acc =
+      match BatEnum.get sA with
+      | Some c -> begin
+        match cand_B c sB (mk_true srk) with
+        | Some f -> cand_A sA sB (mk_or srk [(f); acc])
         | None -> None
       end
-      | [] -> Some acc
+      | None -> Some acc
     in
-    cand_A sA sB (mk_false srk)
+    cand_A (Polyhedron.enum_constraints sA) (Polyhedron.enum_constraints sB) (mk_false srk)
 
   let sample context vars (model: 'a Interpretation.interpretation) (phi: Polyhedron.t) = 
     Polyhedron.enum_constraints phi 
@@ -96,26 +96,31 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     |> BatEnum.fold (fun acc v -> v :: acc) []
     |> mk_and context
 
-(*
-  sample (samples: polyhedron list) : polyhedron list <- Nikhil
-   m = model
-   A = 
-    
-  interpolant (A: polyhedron list) (B: polyhedron list)=
-    sA = sample A
-    sB = sample B
-    C = cand sA sB
-    while not (A -> C and C -> \neg B):
-      populate pitp
-      if PTIP = empty then SAT
-      else
-        ...
 
-*)
+  let interpolant srk vars dim cs (a: Polyhedron.t) (b: Polyhedron.t)=
+    let formA = Polyhedron.to_formula cs a in
+    let formB = Polyhedron.to_formula cs b in
+    let rec aux sA sB =
+      match cand srk dim vars sA sB with
+      | Some c -> (
+        match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
+        | `Sat i -> begin
+          let newSA = (Polyhedron.meet (Polyhedron.of_formula cs (sample srk vars i a)) sA) in
+          aux newSA sB
+        end
+        | _ -> begin 
+          match (Smt.get_model srk (mk_and srk [formB; c])) with
+          | `Sat i ->
+            let newSB = (Polyhedron.meet (Polyhedron.of_formula cs (sample srk vars i b)) sB) in
+            aux sA newSB
+          | _ -> c
+        end
+      )
+      | None -> raise Exit
+    in
+    aux Polyhedron.bottom Polyhedron.bottom
 
-(* to do: populate PItp (an ocaml map?)
-   decide how we want to represent SA and SB (lists? there might be a more efficient data structure that I don't know about)
-   do termination conditions
+(* to do: 
    figure out merging + splitting
    *)
 
