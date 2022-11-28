@@ -1,7 +1,7 @@
 open OUnit
 
 let suite = "Main" >::: [
-    Test_memo.suite;
+    (* Test_memo.suite;
     Test_scalar.suite;
     Test_loop.suite;
     Test_fixpoint.suite;
@@ -24,7 +24,8 @@ let suite = "Main" >::: [
     Test_termination.suite;
     Test_transition.suite;
     Test_WeightedGraph.suite;
-    Test_chc.suite
+    Test_chc.suite *)
+    Test_interpolants.suite
 ]
 
 let _ =

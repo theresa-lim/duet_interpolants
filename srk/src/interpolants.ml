@@ -1,7 +1,10 @@
 open Syntax
+open BatPervasives
+
+include Log.Make(struct let name = "srk.interpolants" end)
 
 module M = Map.Make(struct type t = int [@@deriving ord] end)
-
+module CS = CoordinateSystem
 module Interpolator = 
 struct 
 
@@ -60,68 +63,126 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     Some (mk_leq srk ix k_value)
   | _ -> None
 
-  let cand srk dim vars (sA: Polyhedron.t) (sB: Polyhedron.t) : 'a formula option= 
-    let rec cand_B a sB acc = 
-      (* need to get the variables from ??? A or B *)
-      match BatEnum.get sB with
-      | Some c -> begin 
-        match halfITP srk dim vars (Polyhedron.of_constraints (BatEnum.singleton a)) (Polyhedron.of_constraints (BatEnum.singleton c)) with
+  let cand srk dim vars (sA: Polyhedron.t list) (sB: Polyhedron.t list) : 'a formula option= 
+    let rec cand_B (a: Polyhedron.t) (sB: Polyhedron.t list) acc = 
+      match sB with
+      | hd :: tl -> begin 
+        match halfITP srk dim vars a hd with
         | Some f -> 
-        cand_B a sB (mk_and srk [f ; acc])
+        cand_B a tl (mk_and srk [f ; acc])
         | None -> None
       end
-      | None -> Some acc
+      | [] -> Some acc
     in
-    let rec cand_A sA sB acc =
-      match BatEnum.get sA with
-      | Some c -> begin
-        match cand_B c sB (mk_true srk) with
-        | Some f -> cand_A sA sB (mk_or srk [(f); acc])
+    let rec cand_A (sA: Polyhedron.t list) (sB: Polyhedron.t list) acc =
+      match sA with
+      | hd :: tl -> begin
+        match cand_B hd sB (mk_true srk) with
+        | Some f -> cand_A tl sB (mk_or srk [(f); acc])
         | None -> None
       end
-      | None -> Some acc
+      | [] -> Some acc
     in
-    cand_A (Polyhedron.enum_constraints sA) (Polyhedron.enum_constraints sB) (mk_false srk)
+    cand_A sA sB (mk_false srk)
 
-  let sample context vars (model: 'a Interpretation.interpretation) (phi: Polyhedron.t) = 
-    Polyhedron.enum_constraints phi 
-    |> BatEnum.map (fun (typ, v) ->
-      let formula = (match typ with 
-      | `Nonneg -> mk_leq context (mk_zero context) (Linear.term_of_vec context (fun i -> List.nth vars i) v)
-      | `Pos -> mk_lt context (mk_zero context) (Linear.term_of_vec context (fun i -> List.nth vars i) v)
-      | `Zero -> mk_eq context (mk_zero context) (Linear.term_of_vec context (fun i -> List.nth vars i) v))
-      in 
-      if (Interpretation.evaluate_formula model formula) then formula else mk_not context formula
-      )
-    |> BatEnum.fold (fun acc v -> v :: acc) []
-    |> mk_and context
+  let sample context (model: 'a Interpretation.interpretation) (phi: Polyhedron.t list) cs = 
+    List.map (fun poly -> 
+      let formula = (Polyhedron.to_formula cs poly) in 
+      if Interpretation.evaluate_formula model formula then formula else mk_not context formula
+    ) phi
+    |> mk_and context 
 
+  let formula_of_polyList srk cs ls= 
+    List.map (Polyhedron.to_formula cs) ls |> List.fold_left (fun acc f -> mk_or srk [f; acc]) (mk_false srk)
 
-  let interpolant srk vars dim cs (a: Polyhedron.t) (b: Polyhedron.t)=
-    let formA = Polyhedron.to_formula cs a in
-    let formB = Polyhedron.to_formula cs b in
-    let rec aux sA sB =
+  let interpolant srk vars dim cs (a: Polyhedron.t list) (b: Polyhedron.t list)=
+    let formA = formula_of_polyList srk cs a in
+    let formB = formula_of_polyList srk cs b in
+    let rec aux (sA: Polyhedron.t list) (sB: Polyhedron.t list) =
       match cand srk dim vars sA sB with
       | Some c -> (
         match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
         | `Sat i -> begin
-          let newSA = (Polyhedron.meet (Polyhedron.of_formula cs (sample srk vars i a)) sA) in
+          let newSA = Polyhedron.of_formula cs (sample srk i a cs) :: sA in
           aux newSA sB
         end
-        | _ -> begin 
+        | `Unsat -> begin 
           match (Smt.get_model srk (mk_and srk [formB; c])) with
           | `Sat i ->
-            let newSB = (Polyhedron.meet (Polyhedron.of_formula cs (sample srk vars i b)) sB) in
+            let newSB = Polyhedron.of_formula cs (sample srk i b cs) :: sB in
             aux sA newSB
-          | _ -> c
+          | `Unsat -> Some c
+          | `Unknown -> assert false
         end
+        | `Unknown -> assert false
       )
-      | None -> raise Exit
+      | None -> None
     in
-    aux Polyhedron.bottom Polyhedron.bottom
+    aux [] []
 
-(* to do: 
-   figure out merging + splitting
-   *)
+    let to_list ?exists:(p=fun _ -> true) cs srk (phi: 'a formula) : Polyhedron.t list=
+      let solver = Smt.mk_solver srk in
+      let phi_symbols = symbols phi in
+      let symbol_list = Symbol.Set.elements phi_symbols in
 
+    let disjuncts = ref 0 in
+    let rec go list =
+      Smt.Solver.push solver;
+      Smt.Solver.add solver [mk_not srk (formula_of_polyList srk cs list)];
+      let result =
+        Log.time "lazy_dnf/sat" (Smt.Solver.get_concrete_model solver) symbol_list
+      in
+      match result with
+      | `Unsat ->
+        Smt.Solver.pop solver 1;
+        list
+      | `Unknown ->
+        begin
+          logf ~level:`warn "abstraction timed out (%d disjuncts); returning top"
+            (!disjuncts);
+          Smt.Solver.pop solver 1;
+          [Polyhedron.top]
+        end
+      | `Sat interp -> begin
+          Smt.Solver.pop solver 1;
+          incr disjuncts;
+          logf "[%d] abstract lazy_dnf" (!disjuncts);
+          begin
+            let disjunct =
+              match Interpretation.select_implicant interp phi with
+              | Some d -> Polyhedron.of_implicant ~admit:true cs d
+              | None -> assert false
+            in
+
+            let valuation =
+              let table : QQ.t array =
+                Array.init (CS.dim cs) (fun i ->
+                    Interpretation.evaluate_term
+                      interp
+                      (CS.term_of_coordinate cs i))
+              in
+              fun i -> table.(i)
+            in
+            let projected_coordinates =
+              BatEnum.filter (fun i ->
+                  match CS.destruct_coordinate cs i with
+                  | `App (sym, _) -> not (p sym)
+                  | _ -> true)
+                (0 -- (CS.dim cs - 1))
+              |> BatList.of_enum
+            in
+            let projected_disjunct =
+              Polyhedron.local_project valuation projected_coordinates disjunct
+            in
+            go (projected_disjunct :: list)
+          end
+        end
+    in
+    Smt.Solver.add solver [phi];
+    (Log.time "Abstraction" go [])
+
+    let to_lists exists srk phi1 phi2= 
+      let cs = CoordinateSystem.mk_empty srk in
+      ((to_list ~exists cs srk phi1, to_list cs srk phi2), cs)
+      
 end

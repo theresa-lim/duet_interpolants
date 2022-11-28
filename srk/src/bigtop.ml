@@ -255,7 +255,34 @@ let spec_list = [
          ) Log.loggers;
        exit 0;
      ),
-   " List modules which can be used with -verbose")
+   " List modules which can be used with -verbose");
+
+   ("-interpolate", 
+    Arg.String (fun file ->
+      match String.split_on_char ';' file with
+      | [fileA; fileB] ->
+      let phiA = load_formula fileA in
+      let phiB = load_formula fileB in
+      let (qf, phiA) = (Quantifier.normalize srk phiA) in
+      if List.exists (fun (q, _) -> q = `Forall || q = `Exists) qf then
+        failwith "quanitification not supported";
+      
+      let (qf, phiB) = (Quantifier.normalize srk phiB) in
+      if List.exists (fun (q, _) -> q = `Forall || q = `Exists) qf then
+        failwith "quanitification not supported";
+      let exists v =
+         not (List.exists (fun (_, x) -> x = v) qf) in
+      let ((a, b), cs) = Interpolants.Interpolator.to_lists exists srk phiA phiB in 
+      begin (* still need to figure out how to get variables *)
+      match Interpolants.Interpolator.interpolant srk (Srk.Syntax.free_vars) (CoordinateSystem.dim cs) (cs) a b with
+        | Some f -> print_string "UNSAT: Interpolant = ";  Format.printf "%a@\n" (pp_smtlib2 srk) f
+        | None -> print_string "SAT"; ()
+      end
+      | _ -> failwith "Usage: bigtop -interpolate formulaA.smt2;formulaB.smt2"
+
+      ),
+      " Prove unsatisfiability by presenting an interpolant"
+   )
 ]
 
 let usage_msg = "bigtop: command line interface to srk \n\
@@ -267,7 +294,8 @@ let usage_msg = "bigtop: command line interface to srk \n\
   \tbigtop -qe formula.smt2\n\
   \tbigtop -stats formula.smt2\n\
   \tbigtop -random (A|E)* depth [dense|sparse]\n\
-  \tbigtop -reachable-goal chc.smt2\n"
+  \tbigtop -reachable-goal chc.smt2\n
+  \tbigtop -interpolate formulaA.smt2;formulaB.smt2"
 
 let anon_fun s = failwith ("Unknown option: " ^ s)
 
