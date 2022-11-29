@@ -48,7 +48,7 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     in  
     let k_constraint = 
       if isA then mk_leq srk (mk_add srk k_sum) (mk_const srk k)(* shouldn't this be the other way around?*)
-      else mk_not srk (mk_leq srk (mk_add srk k_sum) (mk_neg srk (mk_const srk k)))
+      else mk_not srk (mk_leq srk (mk_neg srk (mk_const srk k)) (mk_add srk k_sum))
     in 
 
     mk_and srk (k_constraint :: i_constraints @ nonneg)
@@ -103,13 +103,13 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
       | Some c -> (
         match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
         | `Sat i -> begin
-          let newSA = Polyhedron.of_formula cs (sample srk i a cs) :: sA in
+          let newSA = Polyhedron.of_implicant ~admit:true cs [(sample srk i a cs)] :: sA in
           aux newSA sB
         end
         | `Unsat -> begin 
           match (Smt.get_model srk (mk_and srk [formB; c])) with
           | `Sat i ->
-            let newSB = Polyhedron.of_formula cs (sample srk i b cs) :: sB in
+            let newSB = Polyhedron.of_implicant ~admit:true cs [(sample srk i a cs)] :: sB in
             aux sA newSB
           | `Unsat -> Some c
           | `Unknown -> assert false
