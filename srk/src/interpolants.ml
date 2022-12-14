@@ -4,14 +4,25 @@ open BatPervasives
 include Log.Make(struct let name = "srk.interpolants" end)
 
 type inequality = Open | Closed 
+type sample = int * Polyhedron.t 
+type collection = sample list 
 module M = Map.Make(struct type t = int [@@deriving ord] end)
 module CS = CoordinateSystem
 module Interpolator = 
 struct 
 
+let list_eq a b = 
+  List.for_all2 (fun a b -> a = b) a b
+
+(* Randomly shuffle a list *)
+  let shuffle d = 
+    let nd = List.map (fun c -> (Random.bits (), c)) d in
+    let sond = List.sort compare nd in
+    List.map snd sond
+
 (* given polyhedrons pA and pB, computes the half-space interpolent that 
    seperates them*)
-let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) = 
+let halfITP srk dim variables (pA: collection) (pB: collection) = 
     let i = List.map (fun ind -> mk_symbol srk ~name:("i"^(string_of_int ind)) `TyReal) 
           (List.init dim (fun v -> v)) in 
     let k = (mk_symbol srk ~name:"k" `TyReal) in 
@@ -63,7 +74,7 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
 
     mk_and srk (k_constraint :: op_phi :: i_constraints @ nonneg)
   in
-  let formula = mk_and srk [(phi pA true); (phi pB false)] in
+  let formula = mk_and srk ((List.map (fun (_, p) -> phi p true) pA) @ List.map (fun (_, p) -> phi p false) pB) in 
   let model = Smt.get_model srk formula in
   match model with
   | `Sat interp -> 
@@ -73,29 +84,30 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     Some (if Interpretation.bool interp openv then (mk_lt srk ix k_value) else (mk_leq srk ix k_value))
   | _ -> None
 
-  let cand srk dim vars (sA: Polyhedron.t list) (sB: Polyhedron.t list) : 'a formula option= 
-    let rec cand_B (a: Polyhedron.t) (sB: Polyhedron.t list) acc = 
+  let cand srk dim vars (sA: collection list) (sB: collection list) : 'a formula option * ((collection * collection) option)= 
+    let rec cand_B (a: collection) (sB: collection list) acc = 
       match sB with
       | hd :: tl -> begin 
         match halfITP srk dim vars a hd with
         | Some f -> 
         cand_B a tl (mk_and srk [f ; acc])
-        | None -> None
+        | None -> None, Some (a, hd)
       end
-      | [] -> Some acc
+      | [] -> Some acc, None
     in
-    let rec cand_A (sA: Polyhedron.t list) (sB: Polyhedron.t list) acc =
+    let rec cand_A (sA: collection list) (sB: collection list) acc =
       match sA with
       | hd :: tl -> begin
         match cand_B hd sB (mk_true srk) with
-        | Some f -> cand_A tl sB (mk_or srk [(f); acc])
-        | None -> None
+        | Some f, None -> cand_A tl sB (mk_or srk [(f); acc])
+        | None, Some (a, b) -> None, Some (a, b)
+        | _ -> assert false
       end
-      | [] -> Some acc
+      | [] -> Some acc, None
     in
     cand_A sA sB (mk_false srk)
 
-  let sample _srk (model: 'a Interpretation.interpretation) (phi: Polyhedron.t list) cs = 
+  let sample _srk (model: 'a Interpretation.interpretation) (phi: Polyhedron.t list) cs id_ref = 
     let atoms = List.fold_left (fun b p -> BatEnum.append b (Polyhedron.enum_constraints p)) (BatEnum.empty ()) phi in 
     let val_of_int = (fun i -> CoordinateSystem.term_of_coordinate cs i |> Interpretation.evaluate_term model)in 
     let constr = BatEnum.map (fun (kind, v) -> 
@@ -107,35 +119,62 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
       (* For now, no setting things to 0. Just put ax <= b && ax >= b *)
       | `Zero -> assert false
     ) atoms in 
-    Polyhedron.of_constraints constr
+    id_ref := !id_ref + 1;
+    !id_ref, Polyhedron.of_constraints constr
+
+  let merge (s: collection) (ls : collection list) (marked : collection list) = 
+    let ls = shuffle ls in 
+    let rec try_merging s ls = match ls with 
+    | [] -> [s]
+    | hd :: tl -> 
+        if List.mem (s @ hd) marked 
+          then hd :: (try_merging s tl)
+          else (s @ hd) :: tl
+    in 
+    try_merging s ls
+
+  (* Split collection c, remove c from ls, and insert the resulting splitted collections back into ls *)
+  let split (c : collection) (ls : collection list) (marked : collection list) = 
+    let pivot = Random.int (List.length c) in
+    let ls = List.filter (fun col -> not (list_eq col c)) ls in 
+    let f, s = List.filteri (fun i _ -> i < pivot) c, List.filteri (fun i _ -> i >= pivot) c in 
+    merge f (merge s ls marked) marked
+
 
   let formula_of_polyList srk cs ls= 
     List.map (Polyhedron.to_formula cs) ls |> List.fold_left (fun acc f -> mk_or srk [f; acc]) (mk_false srk)
 
   let interpolant srk vars dim cs (a: Polyhedron.t list) (b: Polyhedron.t list )=
+    let sample_id_ref = ref 0 in 
     let formA = formula_of_polyList srk cs a in
     let formB = formula_of_polyList srk cs b in
-    let rec aux (sA: Polyhedron.t list) (sB: Polyhedron.t list) =        
+    let rec aux (sA: collection list) (sB: collection list) (marked: collection list) =        
         match cand srk dim vars sA sB with
-      | Some c -> (
+      | Some c, None -> (
         match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
         | `Sat i -> begin
-          let newSA = (sample srk i a cs) :: sA in
-          aux newSA sB
+          let newSA = merge [(sample srk i a cs sample_id_ref)] sA marked in
+          aux newSA sB marked
         end
         | `Unsat -> begin 
           match (Smt.get_model srk (mk_and srk [formB; c])) with
           | `Sat i ->
-            let newSB = (sample srk i b cs) :: sB in
-            aux sA newSB
+            let newSB = merge [(sample srk i b cs sample_id_ref)] sB marked in
+            aux sA newSB marked
           | `Unsat -> Some c
           | `Unknown -> assert false
         end
         | `Unknown -> assert false
       )
-      | None -> None
+      | None, Some (a, b) -> begin 
+        match (a, b) with 
+        | _ :: _, _ -> let sA = split a sA marked in aux sA sB (a :: marked)
+        | _, _ :: _ -> let sB = split b sB marked in aux sA sB (b :: marked)
+        | _ -> None
+        end
+      | _ -> assert false
     in
-    aux [] []
+    aux [] [] []
 
     let to_list ?exists:(p=fun _ -> true) cs srk (phi: 'a formula) : Polyhedron.t list=
       let solver = Smt.mk_solver srk in
