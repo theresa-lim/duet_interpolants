@@ -265,18 +265,18 @@ let spec_list = [
       let phiB = load_formula fileB in
       let (qf, phiA) = (Quantifier.normalize srk phiA) in
       if List.exists (fun (q, _) -> q = `Forall || q = `Exists) qf then
-        failwith "quanitification not supported";
+        failwith "quantification not supported";
       
       let (qf, phiB) = (Quantifier.normalize srk phiB) in
       if List.exists (fun (q, _) -> q = `Forall || q = `Exists) qf then
-        failwith "quanitification not supported";
+        failwith "quantification not supported";
       let exists v =
          not (List.exists (fun (_, x) -> x = v) qf) in
       let ((a, b), cs) = Interpolants.Interpolator.to_lists exists srk phiA phiB in 
       begin (* still need to figure out how to get variables *)
       let dim = CoordinateSystem.dim cs in
       let vars = List.init dim (fun i -> CoordinateSystem.term_of_coordinate cs i) in
-      match Interpolants.Interpolator.interpolant srk vars dim (cs) a b with
+      match Interpolants.Interpolator.interpolant srk vars dim cs a b with
         | Some f -> print_string "UNSAT: Interpolant = ";  Format.printf "%a@\n" (pp_smtlib2 srk) f
         | None -> print_string "SAT"; ()
       end
@@ -296,8 +296,8 @@ let usage_msg = "bigtop: command line interface to srk \n\
   \tbigtop -qe formula.smt2\n\
   \tbigtop -stats formula.smt2\n\
   \tbigtop -random (A|E)* depth [dense|sparse]\n\
-  \tbigtop -reachable-goal chc.smt2\n
-  \tbigtop -interpolate formulaA.smt2~formulaB.smt2"
+  \tbigtop -reachable-goal chc.smt2\n\
+  \tbigtop -interpolate formulaA.smt2~formulaB.smt2\n"
 
 let anon_fun s = failwith ("Unknown option: " ^ s)
 

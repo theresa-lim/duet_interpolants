@@ -3,6 +3,7 @@ open BatPervasives
 
 include Log.Make(struct let name = "srk.interpolants" end)
 
+type inequality = Open | Closed 
 module M = Map.Make(struct type t = int [@@deriving ord] end)
 module CS = CoordinateSystem
 module Interpolator = 
@@ -12,22 +13,23 @@ struct
    seperates them*)
 let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) = 
     let i = List.map (fun ind -> mk_symbol srk ~name:("i"^(string_of_int ind)) `TyReal) 
-          (List.init dim (fun v -> v)) in (* what is dim here?? need a diff set of i *)
+          (List.init dim (fun v -> v)) in 
     let k = (mk_symbol srk ~name:"k" `TyReal) in 
+    let openv = (mk_symbol srk ~name:"open" `TyBool) in 
 
   let phi (p: Polyhedron.t) (isA: bool) =
     let matrix_form = 
       Polyhedron.enum_constraints p
       |> BatEnum.fold (fun acc (typ, vec) -> 
         match typ with 
-        | `Nonneg -> vec :: acc
-        | `Pos -> assert false
-        | `Zero -> vec :: (Linear.QQVector.negate vec) :: acc
+        | `Nonneg -> (Closed, vec) :: acc
+        | `Pos -> (Open, vec) :: acc
+        | `Zero -> (Closed, vec) :: (Closed, Linear.QQVector.negate vec) :: acc
         ) [] 
       in 
-    let lambdas = List.mapi (fun i _ -> mk_symbol srk ~name:("lambda"^(string_of_int i)) `TyReal) matrix_form in
+    let lambdas = List.mapi (fun i (typ, _) -> typ, mk_symbol srk ~name:("lambda"^(string_of_int i)) `TyReal) matrix_form in
 
-    let (i_sums, k_sum) = List.fold_left2 (fun (i_sums, k_sum) vec lambda ->
+    let (i_sums, k_sum) = List.fold_left2 (fun (i_sums, k_sum) (_, vec) (_, lambda) ->
       Linear.QQVector.fold (fun ind v (i_sums, k_sum) ->  
         let term = mk_mul srk [mk_real srk v; mk_const srk lambda] in 
         if ind == Linear.const_dim then (i_sums, term :: k_sum)
@@ -37,21 +39,29 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
       ) vec (i_sums, k_sum)
       ) (M.empty, []) matrix_form lambdas in 
 
-    let nonneg = List.map (fun sym -> mk_leq srk (mk_zero srk) (mk_const srk sym)) lambdas in 
+    let nonneg = List.map (fun (_, sym) -> mk_leq srk (mk_zero srk) (mk_const srk sym)) lambdas in 
     let i_constraints = 
       if isA then M.fold (fun ind sum acc ->
-        mk_eq srk (mk_const srk (List.nth i ind)) (mk_add srk sum) :: acc
+        mk_eq srk (mk_neg srk (mk_const srk (List.nth i ind))) (mk_add srk sum) :: acc
       ) i_sums [] 
       else M.fold (fun ind sum acc ->
-        mk_eq srk (mk_neg srk (mk_const srk (List.nth i ind))) (mk_add srk sum) :: acc
+        mk_eq srk ((mk_const srk (List.nth i ind))) (mk_add srk sum) :: acc
       ) i_sums [] 
     in  
     let k_constraint = 
-      if isA then mk_leq srk (mk_add srk k_sum) (mk_const srk k)(* shouldn't this be the other way around?*)
-      else mk_not srk (mk_leq srk (mk_neg srk (mk_const srk k)) (mk_add srk k_sum))
+      if isA then mk_leq srk (mk_add srk k_sum) (mk_const srk k)
+      else (mk_leq srk (mk_add srk k_sum) (mk_neg srk (mk_const srk k)))
     in 
+    let zero_open = List.filter_map (fun (typ, lambda) ->
+        match typ with 
+        | Open -> Some (mk_eq srk (mk_const srk lambda) (mk_zero srk)) 
+        | Closed -> None
+      ) lambdas |> mk_and srk in 
+    let op_phi = if isA 
+      then mk_if srk (mk_and srk [mk_eq srk (mk_add srk k_sum) (mk_const srk k); zero_open]) (mk_not srk (mk_const srk openv)) 
+      else mk_if srk (mk_and srk [mk_eq srk (mk_add srk k_sum) (mk_neg srk (mk_const srk k)); zero_open]) ((mk_const srk openv)) in 
 
-    mk_and srk (k_constraint :: i_constraints @ nonneg)
+    mk_and srk (k_constraint :: op_phi :: i_constraints @ nonneg)
   in
   let formula = mk_and srk [(phi pA true); (phi pB false)] in
   let model = Smt.get_model srk formula in
@@ -60,7 +70,7 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     let k_value = Interpretation.real interp k |> mk_real srk in 
     let ix = List.map2 (fun coeff var -> mk_mul srk [mk_real srk (Interpretation.real interp coeff); var]) i variables 
     |> mk_add srk in 
-    Some (mk_leq srk ix k_value)
+    Some (if Interpretation.bool interp openv then (mk_lt srk ix k_value) else (mk_leq srk ix k_value))
   | _ -> None
 
   let cand srk dim vars (sA: Polyhedron.t list) (sB: Polyhedron.t list) : 'a formula option= 
@@ -85,31 +95,38 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
     in
     cand_A sA sB (mk_false srk)
 
-  let sample context (model: 'a Interpretation.interpretation) (phi: Polyhedron.t list) cs = 
-    List.map (fun poly -> 
-      let formula = (Polyhedron.to_formula cs poly) in 
-      if Interpretation.evaluate_formula model formula then formula else mk_not context formula
-    ) phi
-    |> mk_and context 
+  let sample _srk (model: 'a Interpretation.interpretation) (phi: Polyhedron.t list) cs = 
+    let atoms = List.fold_left (fun b p -> BatEnum.append b (Polyhedron.enum_constraints p)) (BatEnum.empty ()) phi in 
+    let val_of_int = (fun i -> CoordinateSystem.term_of_coordinate cs i |> Interpretation.evaluate_term model)in 
+    let constr = BatEnum.map (fun (kind, v) -> 
+      match kind with 
+      | `Nonneg -> if (QQ.leq QQ.zero (Linear.evaluate_affine val_of_int v)) 
+        then (`Nonneg, v) else (`Pos, Linear.QQVector.negate v)
+      | `Pos -> if (QQ.lt QQ.zero (Linear.evaluate_affine val_of_int v)) 
+        then (`Pos, v) else (`Nonneg, Linear.QQVector.negate v)
+      (* For now, no setting things to 0. Just put ax <= b && ax >= b *)
+      | `Zero -> assert false
+    ) atoms in 
+    Polyhedron.of_constraints constr
 
   let formula_of_polyList srk cs ls= 
     List.map (Polyhedron.to_formula cs) ls |> List.fold_left (fun acc f -> mk_or srk [f; acc]) (mk_false srk)
 
-  let interpolant srk vars dim cs (a: Polyhedron.t list) (b: Polyhedron.t list)=
+  let interpolant srk vars dim cs (a: Polyhedron.t list) (b: Polyhedron.t list )=
     let formA = formula_of_polyList srk cs a in
     let formB = formula_of_polyList srk cs b in
-    let rec aux (sA: Polyhedron.t list) (sB: Polyhedron.t list) =
-      match cand srk dim vars sA sB with
+    let rec aux (sA: Polyhedron.t list) (sB: Polyhedron.t list) =        
+        match cand srk dim vars sA sB with
       | Some c -> (
         match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
         | `Sat i -> begin
-          let newSA = Polyhedron.of_implicant ~admit:true cs [(sample srk i a cs)] :: sA in
+          let newSA = (sample srk i a cs) :: sA in
           aux newSA sB
         end
         | `Unsat -> begin 
           match (Smt.get_model srk (mk_and srk [formB; c])) with
           | `Sat i ->
-            let newSB = Polyhedron.of_implicant ~admit:true cs [(sample srk i a cs)] :: sB in
+            let newSB = (sample srk i b cs) :: sB in
             aux sA newSB
           | `Unsat -> Some c
           | `Unknown -> assert false
@@ -183,6 +200,13 @@ let halfITP srk dim variables (pA: Polyhedron.t) (pB: Polyhedron.t) =
 
     let to_lists exists srk phi1 phi2= 
       let cs = CoordinateSystem.mk_empty srk in
-      ((to_list ~exists cs srk phi1, to_list cs srk phi2), cs)
+      (* Very hacky here: we assume that the coordinate systems "line up". 
+         Eventually, this should be resolved by taking a single file as input and splitting up
+         A and B in some way.   
+         In the meantime, it's a good idea to inspect the formulas visually to ensure that the 
+         variables look right.
+      *)
+      let throwaway = CoordinateSystem.mk_empty srk in
+      ((to_list ~exists cs srk phi1, to_list throwaway srk phi2), cs)
       
 end
