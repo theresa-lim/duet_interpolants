@@ -11,8 +11,14 @@ module CS = CoordinateSystem
 module Interpolator = 
 struct 
 
-let list_eq a b = 
-  List.for_all2 (fun a b -> a = b) a b
+let _print_collection c = 
+  print_string "\n collection: ";
+  List.iter (fun (id, _) -> print_int id; print_string " ; ") c
+
+
+let list_eq (a: collection) (b: collection) = 
+  let sort_sample s = (List.sort (fun (id1, _) (id2, _) -> id1 - id2) s) in 
+  List.length a = List.length b && List.for_all2 (fun (a, _) (b, _) -> a = b) (sort_sample a) (sort_sample b)
 
 (* Randomly shuffle a list *)
   let shuffle d = 
@@ -109,6 +115,10 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
 
   let sample _srk (model: 'a Interpretation.interpretation) (phi: Polyhedron.t list) cs id_ref = 
     let atoms = List.fold_left (fun b p -> BatEnum.append b (Polyhedron.enum_constraints p)) (BatEnum.empty ()) phi in 
+    let atoms = BatEnum.fold (fun acc (typ, v) -> match typ with 
+        | `Zero -> BatEnum.append (BatEnum.append (BatEnum.singleton (`Nonneg, v)) (BatEnum.singleton (`Nonneg, (Linear.QQVector.negate v)))) (acc)
+        | _ -> BatEnum.append (BatEnum.singleton (typ, v)) (acc)
+      ) (BatEnum.empty ()) atoms in 
     let val_of_int = (fun i -> CoordinateSystem.term_of_coordinate cs i |> Interpretation.evaluate_term model)in 
     let constr = BatEnum.map (fun (kind, v) -> 
       match kind with 
@@ -135,9 +145,12 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
 
   (* Split collection c, remove c from ls, and insert the resulting splitted collections back into ls *)
   let split (c : collection) (ls : collection list) (marked : collection list) = 
-    let pivot = Random.int (List.length c) in
+    (* print_string "splitting "; _print_collection c; *)
+    let c = shuffle c in 
+    let pivot = Random.int ((List.length c) - 1) in
     let ls = List.filter (fun col -> not (list_eq col c)) ls in 
-    let f, s = List.filteri (fun i _ -> i < pivot) c, List.filteri (fun i _ -> i >= pivot) c in 
+    let f, s = List.filteri (fun i _ -> i <= pivot) c, List.filteri (fun i _ -> i > pivot) c in 
+    let marked = (f @ s) :: marked in 
     merge f (merge s ls marked) marked
 
 
@@ -148,19 +161,31 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
     let sample_id_ref = ref 0 in 
     let formA = formula_of_polyList srk cs a in
     let formB = formula_of_polyList srk cs b in
-    let rec aux (sA: collection list) (sB: collection list) (marked: collection list) =        
+    print_string "\n A formula: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) formA) ;
+    print_string "\n B formula: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) formA) ;
+    print_string "\n together: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (mk_and srk [formA; formB])) ; print_string "\n";
+    let rec aux (sA: collection list) (sB: collection list) (marked: collection list) ctr = 
+        if (ctr < 0) then None else (    
+        (* print_string "\n\n NEW ITERATION";        print_int ctr;   
+
+        print_string "\na: ";
+        List.iter (fun c -> _print_collection c) sA; 
+        print_string "\nb: ";
+
+        List.iter (fun c -> _print_collection c) sB;  *)
         match cand srk dim vars sA sB with
       | Some c, None -> (
+        (* print_string "\n candidate: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (c)) ; *)
         match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
         | `Sat i -> begin
           let newSA = merge [(sample srk i a cs sample_id_ref)] sA marked in
-          aux newSA sB marked
+          aux newSA sB marked (ctr - 1)
         end
         | `Unsat -> begin 
           match (Smt.get_model srk (mk_and srk [formB; c])) with
           | `Sat i ->
             let newSB = merge [(sample srk i b cs sample_id_ref)] sB marked in
-            aux sA newSB marked
+            aux sA newSB marked (ctr - 1)
           | `Unsat -> Some c
           | `Unknown -> assert false
         end
@@ -168,13 +193,15 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
       )
       | None, Some (a, b) -> begin 
         match (a, b) with 
-        | _ :: _, _ -> let sA = split a sA marked in aux sA sB (a :: marked)
-        | _, _ :: _ -> let sB = split b sB marked in aux sA sB (b :: marked)
-        | _ -> None
+        | _ :: _ :: _, _ -> let sA = split a sA marked in aux sA sB (a :: marked) (ctr - 1)
+        | _, _ :: _ :: _ -> let sB = split b sB marked in aux sA sB (b :: marked) (ctr - 1)
+        | _ -> 
+          print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (Polyhedron.to_formula cs (snd (List.hd a)))) ;
+          None
         end
-      | _ -> assert false
+      | _ -> assert false)
     in
-    aux [] [] []
+    aux [] [] [] 2000
 
     let to_list ?exists:(p=fun _ -> true) cs srk (phi: 'a formula) : Polyhedron.t list=
       let solver = Smt.mk_solver srk in
