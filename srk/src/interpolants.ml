@@ -126,7 +126,7 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
         then (`Nonneg, v) else (`Pos, Linear.QQVector.negate v)
       | `Pos -> if (QQ.lt QQ.zero (Linear.evaluate_affine val_of_int v)) 
         then (`Pos, v) else (`Nonneg, Linear.QQVector.negate v)
-      (* For now, no setting things to 0. Just put ax <= b && ax >= b *)
+      (* Line 118 replaces ax = b with ax <= b && ax >= b, so this should be inaccessible *)
       | `Zero -> assert false
     ) atoms in 
     id_ref := !id_ref + 1;
@@ -145,7 +145,6 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
 
   (* Split collection c, remove c from ls, and insert the resulting splitted collections back into ls *)
   let split (c : collection) (ls : collection list) (marked : collection list) = 
-    (* print_string "splitting "; _print_collection c; *)
     let c = shuffle c in 
     let pivot = Random.int ((List.length c) - 1) in
     let ls = List.filter (fun col -> not (list_eq col c)) ls in 
@@ -162,30 +161,20 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
     let formA = formula_of_polyList srk cs a in
     let formB = formula_of_polyList srk cs b in
     print_string "\n A formula: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) formA) ;
-    print_string "\n B formula: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) formA) ;
-    print_string "\n together: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (mk_and srk [formA; formB])) ; print_string "\n";
-    let rec aux (sA: collection list) (sB: collection list) (marked: collection list) ctr = 
-        if (ctr < 0) then None else (    
-        (* print_string "\n\n NEW ITERATION";        print_int ctr;   
-
-        print_string "\na: ";
-        List.iter (fun c -> _print_collection c) sA; 
-        print_string "\nb: ";
-
-        List.iter (fun c -> _print_collection c) sB;  *)
+    print_string "\n B formula: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) formA) ; print_string "\n\n";
+    let rec aux (sA: collection list) (sB: collection list) (marked: collection list) = 
         match cand srk dim vars sA sB with
       | Some c, None -> (
-        (* print_string "\n candidate: "; print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (c)) ; *)
         match (Smt.get_model srk (mk_and srk [formA; mk_not srk c])) with
         | `Sat i -> begin
           let newSA = merge [(sample srk i a cs sample_id_ref)] sA marked in
-          aux newSA sB marked (ctr - 1)
+          aux newSA sB marked 
         end
         | `Unsat -> begin 
           match (Smt.get_model srk (mk_and srk [formB; c])) with
           | `Sat i ->
             let newSB = merge [(sample srk i b cs sample_id_ref)] sB marked in
-            aux sA newSB marked (ctr - 1)
+            aux sA newSB marked 
           | `Unsat -> Some c
           | `Unknown -> assert false
         end
@@ -193,15 +182,15 @@ let halfITP srk dim variables (pA: collection) (pB: collection) =
       )
       | None, Some (a, b) -> begin 
         match (a, b) with 
-        | _ :: _ :: _, _ -> let sA = split a sA marked in aux sA sB (a :: marked) (ctr - 1)
-        | _, _ :: _ :: _ -> let sB = split b sB marked in aux sA sB (b :: marked) (ctr - 1)
+        | _ :: _ :: _, _ -> let sA = split a sA marked in aux sA sB (a :: marked)
+        | _, _ :: _ :: _ -> let sB = split b sB marked in aux sA sB (b :: marked) 
         | _ -> 
           print_string (SrkUtil.mk_show (Syntax.pp_expr_unnumbered srk) (Polyhedron.to_formula cs (snd (List.hd a)))) ;
           None
         end
-      | _ -> assert false)
+      | _ -> assert false
     in
-    aux [] [] [] 2000
+    aux [] [] []
 
     let to_list ?exists:(p=fun _ -> true) cs srk (phi: 'a formula) : Polyhedron.t list=
       let solver = Smt.mk_solver srk in
