@@ -1,7 +1,7 @@
 (set-logic QF_LRA)
 
-(declare-fun x () Int)
-(declare-fun y () Int)
+(declare-fun x () Real)
+(declare-fun y () Real)
 
 (assert (or 
   (and (<= x 1) (<= y 3)) 
