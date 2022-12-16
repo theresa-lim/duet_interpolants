@@ -7,12 +7,14 @@ This folder contains our test files for the Compositional SMT interpolate functi
 
 + linearA/B.smt2 : formulas with a linear seperating half-plane.
 
-+ tightA/B.smt2 : formulas that require multiple half-planes to seperate.
++ slopeA/B.smt2 : formulas requiring a steeper linear separating half-plane
 
-+ slowA/B.smt2 : 
++ tightA/B.smt2 : formulas that require multiple half-planes to separate.
 
-+ slopeA/B.smt2 :
++ slowA/B.smt2 : formulas that require multiple half planes to separate but have multiple options
 
-+ bmcA/B.smt2 : 
++ bmcA/B.smt2 : formulas from the BMC model of the report, n = 1
 
-+ bmcbigA/B.smt2 :
++ bmcmedA/B.smt2 : formulas from the BMC model of the report, n = 4
+
++ bmcbigA/B.smt2 : formulas from the BMC model of the report, n = 10
