@@ -1,7 +1,9 @@
 Test_Interpolants
 ====
 
-This folder contains our test files for the Compositional SMT interpolate function. A description of each pair of files is below.
+This folder contains our test files for the Compositional SMT interpolate function. A description of each pair of files is below. To run, execute the following command:
+
+./bigtop.exe -interpolate \[file\]A.smt2~\[file\]B.smt2
 
 + paperA/B.smt2 : the example in section 2 of the "Beautiful Interpolants" paper by Albarghouthi and McMillan.
 
